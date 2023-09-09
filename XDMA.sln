@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio 14
-VisualStudioVersion = 14.0.25420.1
+# Visual Studio 15
+VisualStudioVersion = 15.0.28307.539
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "examples", "examples", "{D80C2E2A-FE53-4369-B37A-D7DB8A0C707C}"
 EndProject
@@ -31,8 +31,6 @@ EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "XDMA_Driver", "sys\XDMA_Driver.vcxproj", "{C77CDE8B-790F-4413-A3FB-D413E7368FB5}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "libxdma", "libxdma\libxdma.vcxproj", "{8A516BCB-685A-4A46-A298-A477F804273A}"
-EndProject
-Project("{930C7802-8A8C-48F9-8165-68863BCCD9DD}") = "XDMA_Driver_Setup", "Wix_XDMA_Driver_Setup\XDMA_Driver_Setup.wixproj", "{138C81AC-C661-4851-B17F-D8042202E3E8}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -266,30 +264,6 @@ Global
 		{8A516BCB-685A-4A46-A298-A477F804273A}.Win7_Release|x86.ActiveCfg = Win7_Release|Win32
 		{8A516BCB-685A-4A46-A298-A477F804273A}.Win7_Release|x86.Build.0 = Win7_Release|Win32
 		{8A516BCB-685A-4A46-A298-A477F804273A}.Win7_Release|x86.Deploy.0 = Win7_Release|Win32
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Debug|x64.ActiveCfg = Debug|x64
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Debug|x64.Build.0 = Debug|x64
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Debug|x86.ActiveCfg = Debug|x86
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Debug|x86.Build.0 = Debug|x86
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Release|x64.ActiveCfg = Release|x64
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Release|x64.Build.0 = Release|x64
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Release|x86.ActiveCfg = Release|x86
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Release|x86.Build.0 = Release|x86
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Win10_Debug|x64.ActiveCfg = Debug|x64
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Win10_Debug|x64.Build.0 = Debug|x64
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Win10_Debug|x86.ActiveCfg = Debug|x86
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Win10_Debug|x86.Build.0 = Debug|x86
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Win10_Release|x64.ActiveCfg = Release|x64
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Win10_Release|x64.Build.0 = Release|x64
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Win10_Release|x86.ActiveCfg = Release|x86
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Win10_Release|x86.Build.0 = Release|x86
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Win7_Debug|x64.ActiveCfg = Debug|x64
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Win7_Debug|x64.Build.0 = Debug|x64
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Win7_Debug|x86.ActiveCfg = Debug|x86
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Win7_Debug|x86.Build.0 = Debug|x86
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Win7_Release|x64.ActiveCfg = Release|x64
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Win7_Release|x64.Build.0 = Release|x64
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Win7_Release|x86.ActiveCfg = Release|x86
-		{138C81AC-C661-4851-B17F-D8042202E3E8}.Win7_Release|x86.Build.0 = Release|x86
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -303,5 +277,8 @@ Global
 		{76309238-091F-4080-B1D3-5ECDA7635CE8} = {D80C2E2A-FE53-4369-B37A-D7DB8A0C707C}
 		{C77CDE8B-790F-4413-A3FB-D413E7368FB5} = {2DA8530E-7B62-4A27-A48B-B3323791404D}
 		{8A516BCB-685A-4A46-A298-A477F804273A} = {2DA8530E-7B62-4A27-A48B-B3323791404D}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {58C4C8B2-AAE5-48E2-96C4-97EEED175E68}
 	EndGlobalSection
 EndGlobal

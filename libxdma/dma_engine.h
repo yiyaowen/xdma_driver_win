@@ -1,15 +1,61 @@
 /*
-* XDMA Scatter-Gather DMA Engines
-* ===============================
-*
-* Copyright 2018 Xilinx Inc.
-* Copyright 2010-2012 Sidebranch
-* Copyright 2010-2012 Leon Woestenberg <leon@sidebranch.com>
-*
-* Maintainer:
-* -----------
-* Alexander Hornburg <alexande@xilinx.com>
-*
+-- (c) Copyright 2019 Xilinx, Inc. All rights reserved.
+--
+-- This file contains confidential and proprietary information
+-- of Xilinx, Inc. and is protected under U.S. and
+-- international copyright and other intellectual property
+-- laws.
+--
+-- DISCLAIMER
+-- This disclaimer is not a license and does not grant any
+-- rights to the materials distributed herewith. Except as
+-- otherwise provided in a Valid license issued to you by
+-- Xilinx, and to the maximum extent permitted by applicable
+-- law: (1) THESE MATERIALS ARE MADE AVAILABLE "AS IS" AND
+-- WITH ALL FAULTS, AND XILINX HEREBY DISCLAIMS ALL WARRANTIES
+-- AND CONDITIONS, EXPRESS, IMPLIED, OR STATUTORY, INCLUDING
+-- BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, NON-
+-- INFRINGEMENT, OR FITNESS FOR ANY PARTICULAR PURPOSE; and
+-- (2) Xilinx shall not be liable (whether in contract or tort,
+-- including negligence, or under any other theory of
+-- liability) for any loss or damage of any kind or nature
+-- related to, arising under or in connection with these
+-- materials, including for any direct, or any indirect,
+-- special, incidental, or consequential loss or damage
+-- (including loss of Data, profits, goodwill, or any type of
+-- loss or damage suffered as a result of any action brought
+-- by a third party) even if such damage or loss was
+-- reasonably foreseeable or Xilinx had been advised of the
+-- possibility of the same.
+--
+-- CRITICAL APPLICATIONS
+-- Xilinx products are not designed or intended to be fail-
+-- safe, or for use in any application requiring fail-safe
+-- performance, such as life-support or safety devices or
+-- systems, Class III medical devices, nuclear facilities,
+-- applications related to the deployment of airbags, or any
+-- other applications that could lead to death, personal
+-- injury, or severe property or environmental damage
+-- (individually and collectively, "Critical
+-- Applications"). Customer assumes the sole risk and
+-- liability of any use of Xilinx products in Critical
+-- Applications, subject only to applicable laws and
+-- regulations governing limitations on product liability.
+--
+-- THIS COPYRIGHT NOTICE AND DISCLAIMER MUST BE RETAINED AS
+-- PART OF THIS FILE AT ALL TIMES.
+-------------------------------------------------------------------------------
+--
+-- Vendor         : Xilinx
+-- Revision       : $Revision: #10 $
+-- Date           : $DateTime: 2019/06/30 21:08:14 $
+-- Last Author    : $Author: arayajig $
+--
+-------------------------------------------------------------------------------
+-- Description :
+-- This file is part of the Xilinx DMA IP Core driver for Windows.
+--
+-------------------------------------------------------------------------------
 */
 
 #pragma once
@@ -45,10 +91,18 @@ typedef enum DirToDev_t {
     C2H = 1  // Card-to-Host - read from device
 } DirToDev;
 
+typedef struct XMDL_T {
+    WDFCOMMONBUFFER rcvBuffer;
+    PVOID virtAddr;
+    PHYSICAL_ADDRESS dmaAdrr;
+    size_t len;
+}XMDL, *PXMDL;
+
 /// Ring buffer abstraction for streaming DMA
 typedef struct XDMA_RING_T {
-    WDFCOMMONBUFFER results;
-    PMDL mdl[XDMA_RING_NUM_BLOCKS]; // memory descriptor list - host side
+    WDFCOMMONBUFFER results;         // common buffers are freed by framework once dma_enabler object is deleted
+    WDFCOMMONBUFFER receiveBuffer;   // Common memory. Rx buffer base
+    XMDL xmdl[XDMA_RING_NUM_BLOCKS]; // xdma memory descriptor list - host side
     CHAR dmaTransferContext[DMA_TRANSFER_CONTEXT_SIZE_V1];
     UINT head;
     UINT tail;
@@ -97,6 +151,11 @@ typedef struct XDMA_ENGINE_T {
     EngineType type;            // MemoryMapped or Streaming
     AddressMode addressMode;    // incremental (contiguous) or non-incremental (fixed)
 
+    // for engine request tracking
+    UINT32 capacity;
+    volatile BOOLEAN isReqPending;
+    WDFSPINLOCK engineLock;
+
     // dma transfer related
     WDFCOMMONBUFFER descBuffer;
     WDFDMATRANSACTION dmaTransaction;
@@ -109,6 +168,15 @@ typedef struct XDMA_ENGINE_T {
     ULONG poll;
     WDFCOMMONBUFFER pollWbBuffer; // buffer for holding poll mode descriptor writeback data
     ULONG numDescriptors; // keep count of descriptors in transfer for poll mode
+
+    // if not poll mode
+    KEVENT completionWaitSignal;
+
+    BOOLEAN thInitialized;
+    void *thObject;
+    KSEMAPHORE semaphore;
+    HANDLE thHandle;
+    BOOLEAN terminate;
 } XDMA_ENGINE;
 
 #pragma pack(1)
@@ -155,8 +223,14 @@ typedef struct {
 struct XDMA_DEVICE_T;
 typedef struct XDMA_DEVICE_T* PXDMA_DEVICE;
 
+/// Queries the existence of engine
+void CountChannels(IN PXDMA_DEVICE xdma, OUT ULONG *h2cCount, OUT ULONG *c2hCount);
+
 /// Initialize an XDMA_ENGINE for each engine configured in HW
 NTSTATUS ProbeEngines(IN PXDMA_DEVICE xdma);
+
+/// Close the engine and do cleanup
+void closeEngines(IN PXDMA_DEVICE xdma);
 
 /// Start the DMA engine
 /// The transfer descriptors should be initialized and bound to HW before calling this function
@@ -172,10 +246,7 @@ VOID EngineRingSetup(IN XDMA_ENGINE *engine);
 VOID EngineRingTeardown(IN XDMA_ENGINE *engine);
 
 /// Poll the write-back buffer for DMA transfer completion
-NTSTATUS EnginePollTransfer(IN XDMA_ENGINE* engine);
-
-/// Poll the write-back buffer for DMA transfer completion
-NTSTATUS EnginePollRing(IN XDMA_ENGINE* engine);
+NTSTATUS EnginePollRing(IN XDMA_ENGINE* engine, IN LARGE_INTEGER timeout);
 
 /// enable the engines interrupt
 VOID EngineEnableInterrupt(IN XDMA_ENGINE* engine);

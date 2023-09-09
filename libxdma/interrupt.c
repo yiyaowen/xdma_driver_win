@@ -1,15 +1,61 @@
 /*
-* XDMA Interrupt Service Routines, Handlers and Dispatch Functions
-* ===============================
-*
-* Copyright 2018 Xilinx Inc.
-* Copyright 2010-2012 Sidebranch
-* Copyright 2010-2012 Leon Woestenberg <leon@sidebranch.com>
-*
-* Maintainer:
-* -----------
-* Alexander Hornburg <alexande@xilinx.com>
-*
+-- (c) Copyright 2019 Xilinx, Inc. All rights reserved.
+--
+-- This file contains confidential and proprietary information
+-- of Xilinx, Inc. and is protected under U.S. and
+-- international copyright and other intellectual property
+-- laws.
+--
+-- DISCLAIMER
+-- This disclaimer is not a license and does not grant any
+-- rights to the materials distributed herewith. Except as
+-- otherwise provided in a Valid license issued to you by
+-- Xilinx, and to the maximum extent permitted by applicable
+-- law: (1) THESE MATERIALS ARE MADE AVAILABLE "AS IS" AND
+-- WITH ALL FAULTS, AND XILINX HEREBY DISCLAIMS ALL WARRANTIES
+-- AND CONDITIONS, EXPRESS, IMPLIED, OR STATUTORY, INCLUDING
+-- BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, NON-
+-- INFRINGEMENT, OR FITNESS FOR ANY PARTICULAR PURPOSE; and
+-- (2) Xilinx shall not be liable (whether in contract or tort,
+-- including negligence, or under any other theory of
+-- liability) for any loss or damage of any kind or nature
+-- related to, arising under or in connection with these
+-- materials, including for any direct, or any indirect,
+-- special, incidental, or consequential loss or damage
+-- (including loss of Data, profits, goodwill, or any type of
+-- loss or damage suffered as a result of any action brought
+-- by a third party) even if such damage or loss was
+-- reasonably foreseeable or Xilinx had been advised of the
+-- possibility of the same.
+--
+-- CRITICAL APPLICATIONS
+-- Xilinx products are not designed or intended to be fail-
+-- safe, or for use in any application requiring fail-safe
+-- performance, such as life-support or safety devices or
+-- systems, Class III medical devices, nuclear facilities,
+-- applications related to the deployment of airbags, or any
+-- other applications that could lead to death, personal
+-- injury, or severe property or environmental damage
+-- (individually and collectively, "Critical
+-- Applications"). Customer assumes the sole risk and
+-- liability of any use of Xilinx products in Critical
+-- Applications, subject only to applicable laws and
+-- regulations governing limitations on product liability.
+--
+-- THIS COPYRIGHT NOTICE AND DISCLAIMER MUST BE RETAINED AS
+-- PART OF THIS FILE AT ALL TIMES.
+-------------------------------------------------------------------------------
+--
+-- Vendor         : Xilinx
+-- Revision       : $Revision: #11 $
+-- Date           : $DateTime: 2019/06/30 21:08:14 $
+-- Last Author    : $Author: arayajig $
+--
+-------------------------------------------------------------------------------
+-- Description :
+-- This file is part of the Xilinx DMA IP Core driver for Windows.
+--
+-------------------------------------------------------------------------------
 */
 
 // ========================= include dependencies =================================================
@@ -174,14 +220,55 @@ static NTSTATUS SetupSingleInterrupt(IN PXDMA_DEVICE xdma, IN WDFCMRESLIST Resou
 
     TraceVerbose(DBG_INIT, "User/Channel interrupt vector value = %u", vectorValue);
 
-    xdma->interruptRegs->userVector[0] = vectorValue;
-    xdma->interruptRegs->userVector[1] = vectorValue;
-    xdma->interruptRegs->userVector[2] = vectorValue;
-    xdma->interruptRegs->userVector[3] = vectorValue;
-    xdma->interruptRegs->channelVector[0] = vectorValue;
-    xdma->interruptRegs->channelVector[1] = vectorValue;
+    xdma->interruptRegs->userVector[0] = BuildVectorReg(vectorValue, vectorValue, vectorValue, vectorValue);
+    xdma->interruptRegs->userVector[1] = BuildVectorReg(vectorValue, vectorValue, vectorValue, vectorValue);
+    xdma->interruptRegs->userVector[2] = BuildVectorReg(vectorValue, vectorValue, vectorValue, vectorValue);
+    xdma->interruptRegs->userVector[3] = BuildVectorReg(vectorValue, vectorValue, vectorValue, vectorValue);
+
+    xdma->interruptRegs->channelVector[0] = BuildVectorReg(vectorValue, vectorValue, vectorValue, vectorValue);
+    xdma->interruptRegs->channelVector[1] = BuildVectorReg(vectorValue, vectorValue, vectorValue, vectorValue);
 
     return status;
+}
+
+static void programInterrupts(IN PXDMA_DEVICE xdma, IN ULONG h2cChannels, IN ULONG c2hChannels) {
+
+    UINT j;
+    ULONG i = 0;
+
+    for (j = 0; i < xdma->userMax; ++j) {
+        UINT32 val = 0;
+        UINT k;
+        UINT shift = 0;
+
+        for (k = 0; k < 4 && i < xdma->userMax; ++i, ++k, shift += 8) {
+            val |= (i & 0x1F) << shift;
+        }
+
+        xdma->interruptRegs->userVector[j] = val;
+    }
+
+    UINT vec = xdma->userMax;
+    UINT channelMax = h2cChannels + c2hChannels;
+
+    for (j = 0, i = 0; i < channelMax; ++j) {
+        UINT32 val = 0;
+        UINT k;
+        UINT shift = 0;
+
+        for (k = 0; k < 4 && i < channelMax; ++i, ++k, shift += 8) {
+            if (i < xdma->h2cChannelMax) {
+                val |= (vec & 0x1F) << shift;
+                ++vec;
+            }
+            if (i >= h2cChannels && i < (h2cChannels + xdma->c2hChannelMax)) {
+                val |= (vec & 0x1F) << shift;
+                ++vec;
+            }
+        }
+
+        xdma->interruptRegs->channelVector[j] = val;
+    }
 }
 
 static NTSTATUS SetupMsixInterrupts(IN PXDMA_DEVICE xdma, IN WDFCMRESLIST ResourcesRaw,
@@ -191,11 +278,11 @@ static NTSTATUS SetupMsixInterrupts(IN PXDMA_DEVICE xdma, IN WDFCMRESLIST Resour
     NTSTATUS status = STATUS_SUCCESS;
     ULONG numResources = WdfCmResourceListGetCount(ResourcesTranslated);
     ULONG interruptCount = 0;
+    ULONG totRequiredIrqs = xdma->userMax + xdma->h2cChannelMax + xdma->c2hChannelMax;
 
     ASSERT(xdma->interruptRegs != NULL);
 
-    for (UINT i = 0; (i < numResources) && (interruptCount < XMDA_MAX_NUM_IRQ); i++) {
-
+    for (UINT i = 0; (i < numResources) && (interruptCount < totRequiredIrqs); i++) {
         resource = WdfCmResourceListGetDescriptor(ResourcesTranslated, i);
         resourceRaw = WdfCmResourceListGetDescriptor(ResourcesRaw, i);
 
@@ -203,12 +290,13 @@ static NTSTATUS SetupMsixInterrupts(IN PXDMA_DEVICE xdma, IN WDFCMRESLIST Resour
             continue;
         }
 
-        // assign first 16 interrupt resources to user events
-        if (interruptCount < XDMA_MAX_USER_IRQ) {
+        // assign first available interrupt resources to user events
+        if (interruptCount < xdma->userMax) {
             status = SetupUserInterrupt(xdma, interruptCount, resourceRaw, resource);
-        } else { // assign next 8 interrupt resources to dma engines
-            status = SetupChannelInterrupt(xdma, interruptCount - XDMA_MAX_USER_IRQ,
-                                           resourceRaw, resource);
+        }
+        else { // assign next interrupt resources to dma engines
+            status = SetupChannelInterrupt(xdma, interruptCount - xdma->userMax,
+                resourceRaw, resource);
         }
         if (!NT_SUCCESS(status)) {
             TraceError(DBG_INIT, "Error in setup device interrupt: %!STATUS!", status);
@@ -217,16 +305,6 @@ static NTSTATUS SetupMsixInterrupts(IN PXDMA_DEVICE xdma, IN WDFCMRESLIST Resour
 
         ++interruptCount;
     }
-
-    // first 16 msg IDs are user irq
-    xdma->interruptRegs->userVector[0] = BuildVectorReg(0, 1, 2, 3);
-    xdma->interruptRegs->userVector[1] = BuildVectorReg(4, 5, 6, 7);
-    xdma->interruptRegs->userVector[2] = BuildVectorReg(8, 9, 10, 11);
-    xdma->interruptRegs->userVector[3] = BuildVectorReg(12, 13, 14, 15);
-
-    // next 8 are dma channel
-    xdma->interruptRegs->channelVector[0] = BuildVectorReg(16, 17, 18, 19);
-    xdma->interruptRegs->channelVector[1] = BuildVectorReg(20, 21, 22, 23);
 
     return status;
 }
@@ -249,39 +327,28 @@ static NTSTATUS SetupMultiMsiInterrupts(IN PXDMA_DEVICE xdma, IN WDFCMRESLIST Re
         }
         resource->u.MessageInterrupt.Raw.MessageCount = numVectors;
         resourceRaw->u.MessageInterrupt.Raw.MessageCount = numVectors;
-        // individual resource/msgId for each user interrupt (0-15)
-        for (int n = 0; n < XDMA_MAX_USER_IRQ; n++) {
-            status = SetupUserInterrupt(xdma, 0, resourceRaw, resource);
+
+        // individual resource/msgId for each user interrupt (0-userMax)
+        for (ULONG n = 0; n < xdma->userMax; n++) {
+            status = SetupUserInterrupt(xdma, n, resourceRaw, resource);
             if (!NT_SUCCESS(status)) {
                 TraceError(DBG_INIT, "Error in setup user interrupt: %!STATUS!", status);
                 return status;
             }
         }
 
-        // individual resource/msgId for each channel interrupt (H2C 0-3 and C2H 0-3)
-        for (int n = 0; n < (2 * XDMA_MAX_NUM_CHANNELS); n++) {
+        // individual resource/msgId for each channel interrupt (H2C 0-N and C2H 0-N)
+        for (ULONG n = 0; n < (xdma->h2cChannelMax + xdma->c2hChannelMax); n++) {
             status = SetupChannelInterrupt(xdma, n, resourceRaw, resource);
             if (!NT_SUCCESS(status)) {
                 TraceError(DBG_INIT, "Error in setup channel interrupt: %!STATUS!", status);
                 return status;
             }
         }
+
         status = STATUS_SUCCESS;
         break;
     }
-
-    TraceVerbose(DBG_INIT, "User interrupt msg id = 0");
-    TraceVerbose(DBG_INIT, "Channel interrupt msg ids = H2C[1,2,3,4], C2H[5,6,7,8]");
-
-    // first 16 msg IDs are user irq
-    xdma->interruptRegs->userVector[0] = BuildVectorReg(0, 1, 2, 3);
-    xdma->interruptRegs->userVector[1] = BuildVectorReg(4, 5, 6, 7);
-    xdma->interruptRegs->userVector[2] = BuildVectorReg(8, 9, 10, 11);
-    xdma->interruptRegs->userVector[3] = BuildVectorReg(12, 13, 14, 15);
-
-    // next 8 are dma channel
-    xdma->interruptRegs->channelVector[0] = BuildVectorReg(16, 17, 18, 19);
-    xdma->interruptRegs->channelVector[1] = BuildVectorReg(20, 21, 22, 23);
 
     return status;
 }
@@ -465,11 +532,6 @@ VOID EvtChannelInterruptDpc(IN WDFINTERRUPT interrupt, IN WDFOBJECT device)
 
     // do engine specific work (either EngineProcessTransfer (MM) or EngineProcessRing (ST))
     irq->engine->work(irq->engine);
-
-    // reenable interrupt for this dma engine
-    WdfInterruptAcquireLock(interrupt);
-    EngineEnableInterrupt(irq->engine);
-    WdfInterruptReleaseLock(interrupt);
 }
 
 NTSTATUS EvtUserInterruptEnable(IN WDFINTERRUPT Interrupt, IN WDFDEVICE device) {
@@ -526,33 +588,78 @@ VOID EvtUserInterruptDpc(IN WDFINTERRUPT interrupt, IN WDFOBJECT device)
 // ====================== internal api implementation ==============================================
 
 NTSTATUS SetupInterrupts(IN PXDMA_DEVICE xdma,
+                         IN OUT ULONG *userMax,
+                         IN OUT ULONG *h2cChannelMax,
+                         IN OUT ULONG *c2hChannelMax,
                          IN WDFCMRESLIST ResourcesRaw,
                          IN WDFCMRESLIST ResourcesTranslated) {
 
     NTSTATUS status = STATUS_SUCCESS;
+    ULONG totRequiredIrqs = 0;
     ULONG numIrqResources = 0;
-    USHORT numMsiVectors = 0; // only for multi-message MSI, not MSI-X!
+    USHORT numMsiVectors = 0;
+    USHORT numMsixVectors = 0;
 
-    status = CountInterruptResources(ResourcesTranslated, &numIrqResources);
+    if (NULL == userMax || NULL == h2cChannelMax || NULL == c2hChannelMax) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    xdma->userMax = *userMax;
+    xdma->h2cChannelMax = *h2cChannelMax;
+    xdma->c2hChannelMax = *c2hChannelMax;
+
+    CountChannels(xdma, h2cChannelMax, c2hChannelMax);
+    TraceVerbose(DBG_INIT, "Found h2c channels=%u, c2h channels=%u", *h2cChannelMax, *c2hChannelMax);
+
+    if (xdma->userMax == 0 || xdma->userMax > XDMA_MAX_USER_IRQ)
+        xdma->userMax = XDMA_MAX_USER_IRQ;
+    if (xdma->h2cChannelMax == 0 || xdma->h2cChannelMax > XDMA_MAX_NUM_CHANNELS)
+        xdma->h2cChannelMax = XDMA_MAX_NUM_CHANNELS;
+    if (xdma->c2hChannelMax == 0 || xdma->c2hChannelMax > XDMA_MAX_NUM_CHANNELS)
+        xdma->c2hChannelMax = XDMA_MAX_NUM_CHANNELS;
+
+    if (xdma->h2cChannelMax > *h2cChannelMax)
+        return STATUS_INVALID_PARAMETER;
+    if (xdma->c2hChannelMax > *c2hChannelMax)
+        return STATUS_INVALID_PARAMETER;
+
+    status = GetNumMsixVectors(xdma->wdfDevice, &numMsixVectors);
     if (!NT_SUCCESS(status)) {
-        TraceError(DBG_INIT, "CountInterruptResources failed: %!STATUS!", status);
+        TraceError(DBG_INIT, "GetNumMsixVectors failed: %!STATUS!", status);
     }
     status = GetNumMsiVectors(xdma->wdfDevice, &numMsiVectors);
     if (!NT_SUCCESS(status)) {
         TraceError(DBG_INIT, "GetNumMsiVectors failed: %!STATUS!", status);
     }
-
-    TraceVerbose(DBG_INIT, "xdma->numIrqResources=%u", numIrqResources);
-    if (numIrqResources >= XMDA_MAX_NUM_IRQ) { // msi-x
-        status = SetupMsixInterrupts(xdma, ResourcesRaw, ResourcesTranslated);
-    } else if (numMsiVectors >= XMDA_MAX_NUM_IRQ) { //multi-message MSI with enough contiguous vectors
-        status = SetupMultiMsiInterrupts(xdma, ResourcesRaw, ResourcesTranslated, numMsiVectors);
-    } else { // Line or single-message MSI
-        status = SetupSingleInterrupt(xdma, ResourcesRaw, ResourcesTranslated);
+    status = CountInterruptResources(ResourcesTranslated, &numIrqResources);
+    if (!NT_SUCCESS(status)) {
+        TraceError(DBG_INIT, "CountInterruptResources failed: %!STATUS!", status);
     }
+
+    TraceVerbose(DBG_INIT, "numIrqResources=%u, MSIX=%u, MSI=%u", numIrqResources, numMsixVectors, numMsiVectors);
+
+    totRequiredIrqs = xdma->userMax + xdma->h2cChannelMax + xdma->c2hChannelMax;
+
+    if (numMsixVectors >= totRequiredIrqs) { /* MSIX */
+        status = SetupMsixInterrupts(xdma, ResourcesRaw, ResourcesTranslated);
+        programInterrupts(xdma, *h2cChannelMax, *c2hChannelMax);
+    } else if (numMsiVectors >= totRequiredIrqs) { /* Multi MSI */
+        status = SetupMultiMsiInterrupts(xdma, ResourcesRaw, ResourcesTranslated, numMsiVectors);
+        programInterrupts(xdma, *h2cChannelMax, *c2hChannelMax);
+    } else if (numIrqResources != 0) {
+        status = SetupSingleInterrupt(xdma, ResourcesRaw, ResourcesTranslated);
+    } else {
+        status = STATUS_UNSUCCESSFUL;
+    }
+
     if (!NT_SUCCESS(status)) {
         TraceError(DBG_INIT, "Setting up interrupts failed: %!STATUS!", status);
     }
+
+    *userMax = xdma->userMax;
+    *h2cChannelMax = xdma->h2cChannelMax;
+    *c2hChannelMax = xdma->c2hChannelMax;
+
     return status;
 }
 

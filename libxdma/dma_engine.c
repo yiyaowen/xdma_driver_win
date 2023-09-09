@@ -1,18 +1,61 @@
 /*
-* XDMA Scatter-Gather DMA Engines
-* ===============================
-*
-* Copyright 2018 Xilinx Inc.
-* Copyright 2010-2012 Sidebranch
-* Copyright 2010-2012 Leon Woestenberg <leon@sidebranch.com>
-*
-* Maintainer:
-* -----------
-* Alexander Hornburg <alexande@xilinx.com>
-*
-* References:
-* -----------
-*	[1] pg195-pcie-dma.pdf - DMA/Bridge Subsystem for PCI Express v3.0 - Product Guide
+-- (c) Copyright 2019 Xilinx, Inc. All rights reserved.
+--
+-- This file contains confidential and proprietary information
+-- of Xilinx, Inc. and is protected under U.S. and
+-- international copyright and other intellectual property
+-- laws.
+--
+-- DISCLAIMER
+-- This disclaimer is not a license and does not grant any
+-- rights to the materials distributed herewith. Except as
+-- otherwise provided in a Valid license issued to you by
+-- Xilinx, and to the maximum extent permitted by applicable
+-- law: (1) THESE MATERIALS ARE MADE AVAILABLE "AS IS" AND
+-- WITH ALL FAULTS, AND XILINX HEREBY DISCLAIMS ALL WARRANTIES
+-- AND CONDITIONS, EXPRESS, IMPLIED, OR STATUTORY, INCLUDING
+-- BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, NON-
+-- INFRINGEMENT, OR FITNESS FOR ANY PARTICULAR PURPOSE; and
+-- (2) Xilinx shall not be liable (whether in contract or tort,
+-- including negligence, or under any other theory of
+-- liability) for any loss or damage of any kind or nature
+-- related to, arising under or in connection with these
+-- materials, including for any direct, or any indirect,
+-- special, incidental, or consequential loss or damage
+-- (including loss of Data, profits, goodwill, or any type of
+-- loss or damage suffered as a result of any action brought
+-- by a third party) even if such damage or loss was
+-- reasonably foreseeable or Xilinx had been advised of the
+-- possibility of the same.
+--
+-- CRITICAL APPLICATIONS
+-- Xilinx products are not designed or intended to be fail-
+-- safe, or for use in any application requiring fail-safe
+-- performance, such as life-support or safety devices or
+-- systems, Class III medical devices, nuclear facilities,
+-- applications related to the deployment of airbags, or any
+-- other applications that could lead to death, personal
+-- injury, or severe property or environmental damage
+-- (individually and collectively, "Critical
+-- Applications"). Customer assumes the sole risk and
+-- liability of any use of Xilinx products in Critical
+-- Applications, subject only to applicable laws and
+-- regulations governing limitations on product liability.
+--
+-- THIS COPYRIGHT NOTICE AND DISCLAIMER MUST BE RETAINED AS
+-- PART OF THIS FILE AT ALL TIMES.
+-------------------------------------------------------------------------------
+--
+-- Vendor         : Xilinx
+-- Revision       : $Revision: #12 $
+-- Date           : $DateTime: 2019/06/30 21:08:14 $
+-- Last Author    : $Author: arayajig $
+--
+-------------------------------------------------------------------------------
+-- Description :
+-- This file is part of the Xilinx DMA IP Core driver for Windows.
+--
+-------------------------------------------------------------------------------
 */
 
 // ========================= include dependencies =================================================
@@ -41,11 +84,13 @@ static UINT32 EngineStatus(IN XDMA_ENGINE *engine, IN BOOLEAN clear);
 static void EngineGetAlignments(IN OUT XDMA_ENGINE *engine);
 static NTSTATUS EngineCreateDescriptorBuffer(IN OUT XDMA_ENGINE *engine);
 static NTSTATUS EngineCreateRingBuffer(IN XDMA_ENGINE* engine);
-static void EngineConfigureInterrupt(IN OUT XDMA_ENGINE *engine, IN UINT index);
+static void EngineConfigureInterrupt(IN OUT XDMA_ENGINE *engine, IN UINT index, IN ULONG engineId);
 static void EngineProcessTransfer(IN XDMA_ENGINE *engine);
 static UINT EngineProcessRing(IN XDMA_ENGINE *engine);
 static void EngineRingAdvance(UINT* index);
 static NTSTATUS EngineCreatePollWriteBackBuffer(IN OUT XDMA_ENGINE *engine);
+static NTSTATUS EngineWaitForCompletion(IN XDMA_ENGINE* engine, IN LARGE_INTEGER timeout);
+static NTSTATUS EnginePollTransfer(IN XDMA_ENGINE* engine, IN LARGE_INTEGER timeout);
 
 // Mark these functions as pageable code
 #ifdef ALLOC_PRAGMA
@@ -59,6 +104,30 @@ static NTSTATUS EngineCreatePollWriteBackBuffer(IN OUT XDMA_ENGINE *engine);
 #pragma warning (disable : 30030) 
 
 // ======================== common engine functions ===============================================
+static BOOLEAN isReqPending(IN XDMA_ENGINE *engine)
+{
+    BOOLEAN isReqPending;
+
+    WdfSpinLockAcquire(engine->engineLock);
+    isReqPending = engine->isReqPending;
+    WdfSpinLockRelease(engine->engineLock);
+
+    return isReqPending;
+}
+
+static VOID markReqPending(IN XDMA_ENGINE *engine)
+{
+    WdfSpinLockAcquire(engine->engineLock);
+    engine->isReqPending = TRUE;
+    WdfSpinLockRelease(engine->engineLock);
+}
+
+static VOID unmarkReqPending(IN XDMA_ENGINE *engine)
+{
+    WdfSpinLockAcquire(engine->engineLock);
+    engine->isReqPending = FALSE;
+    WdfSpinLockRelease(engine->engineLock);
+}
 
 static NTSTATUS EngineCreateDescriptorBuffer(IN OUT XDMA_ENGINE *engine) {
     // allocate host-side buffer for descriptors
@@ -71,6 +140,8 @@ static NTSTATUS EngineCreateDescriptorBuffer(IN OUT XDMA_ENGINE *engine) {
         return status;
     }
 
+    engine->capacity = (UINT32)(bufferSize / sizeof(DMA_DESCRIPTOR));
+
     PHYSICAL_ADDRESS descBufferLA = WdfCommonBufferGetAlignedLogicalAddress(engine->descBuffer);
     PUCHAR descBufferVA = (PUCHAR)WdfCommonBufferGetAlignedVirtualAddress(engine->descBuffer);
     RtlZeroMemory(descBufferVA, bufferSize);
@@ -80,16 +151,18 @@ static NTSTATUS EngineCreateDescriptorBuffer(IN OUT XDMA_ENGINE *engine) {
     engine->sgdma->firstDescHi = descBufferLA.HighPart;
     engine->sgdma->firstDescAdj = 0; // depends on transfer - set later in ProgramDMA
 
-    TraceVerbose(DBG_INIT, "descriptor buffer at 0x%08x%08x, size=%lld",
-                 engine->sgdma->firstDescHi, engine->sgdma->firstDescLo, bufferSize);
+    TraceVerbose(DBG_INIT, "descriptor buffer at 0x%08x%08x, size=%lld, capacity=%u",
+                 engine->sgdma->firstDescHi, engine->sgdma->firstDescLo,
+                 bufferSize, engine->capacity);
+
     return status;
 }
 
-static void EngineConfigureInterrupt(IN OUT XDMA_ENGINE *engine, IN UINT index) {
+static void EngineConfigureInterrupt(IN OUT XDMA_ENGINE *engine, IN UINT index, IN ULONG engineId) {
     // engine interrupt request bit(s) - interrupt bit depends on number of engines present
     // see Figure 2-4 on page 46 of pcie dma product guide [1]
     engine->irqBitMask = (1 << XDMA_ENG_IRQ_NUM) - 1;
-    engine->irqBitMask <<= (index * XDMA_ENG_IRQ_NUM);
+    engine->irqBitMask <<= (engineId * XDMA_ENG_IRQ_NUM);
 
     // bind msi interrupt context with this engine
     if (engine->parentDevice->channelInterrupts[index] != NULL) {
@@ -114,6 +187,7 @@ static void EngineProcessTransfer(IN XDMA_ENGINE *engine)
     NTSTATUS status = STATUS_SUCCESS;
     WDFREQUEST request;
     UINT32 engineStatus;
+    BOOLEAN completed;
 
     if (engine == NULL) {
         TraceError(DBG_DMA, "engine=NULL");
@@ -123,9 +197,19 @@ static void EngineProcessTransfer(IN XDMA_ENGINE *engine)
     TraceInfo(DBG_DMA, "%s_%u processing transfer completion",
               DirectionToString(engine->dir), engine->channel);
 
+    WdfSpinLockAcquire(engine->engineLock);
+
+    if (FALSE == engine->isReqPending) {
+        /* Spurious interrupt ?? */
+        TraceError(DBG_DMA, "No request submitted for engine.");
+        WdfSpinLockRelease(engine->engineLock);
+        return;
+    }
+
     request = WdfDmaTransactionGetRequest(engine->dmaTransaction);
     if (!request) {
         TraceInfo(DBG_DMA, "Interrupt but no request pending?");
+        WdfSpinLockRelease(engine->engineLock);
         return;
     }
 
@@ -133,45 +217,6 @@ static void EngineProcessTransfer(IN XDMA_ENGINE *engine)
     engineStatus = EngineStatus(engine, TRUE);
 
     EngineStop(engine);
-
-    switch (engineStatus & XDMA_STAT_EXPECTED_ZERO) {
-    case XDMA_ENGINE_STOPPED_OK: // engine not busy and no errors?
-    {
-        BOOLEAN completed = WdfDmaTransactionDmaCompleted(engine->dmaTransaction, &status);
-        size_t bytesTransferred = WdfDmaTransactionGetBytesTransferred(engine->dmaTransaction);
-
-        TraceInfo(DBG_DMA, "%s_%u transaction%scomplete, bytesTransferred=%llu",
-                  DirectionToString(engine->dir), engine->channel,
-                  completed ? " " : " in", bytesTransferred);
-
-        if (completed) {
-            status = WdfRequestUnmarkCancelable(request);
-            if (!NT_SUCCESS(status)) {
-                TraceError(DBG_DMA, "WdfRequestUnmarkCancelable failed: %!STATUS!", status);
-            }
-            status = WdfDmaTransactionRelease(engine->dmaTransaction);
-            if (!NT_SUCCESS(status)) {
-                TraceError(DBG_DMA, "WdfDmaTransactionRelease failed: %!STATUS!", status);
-            }
-            WdfRequestCompleteWithInformation(request, status, bytesTransferred);
-        }
-        break;
-    }
-    case XDMA_BUSY_BIT: // engine is still busy without sign of errors?
-        TraceError(DBG_DMA, "Engine Still Busy, Descriptors Completed=%u",
-                   engine->regs->completedDescCount);
-    default: // any sign of errors
-        TraceError(DBG_DMA, "Unexpected engine status 0x%08x", engineStatus);
-        status = WdfRequestUnmarkCancelable(request);
-        if (!NT_SUCCESS(status)) {
-            TraceError(DBG_DMA, "WdfRequestUnmarkCancelable failed: %!STATUS!", status);
-        }
-        status = WdfDmaTransactionRelease(engine->dmaTransaction);
-        if (!NT_SUCCESS(status)) {
-            TraceError(DBG_DMA, "WdfDmaTransactionRelease failed: %!STATUS!", status);
-        }
-        WdfRequestComplete(request, STATUS_INTERNAL_ERROR);
-    }
 
     // clear descriptor buffer
     DMA_DESCRIPTOR* descriptorBuffer = (DMA_DESCRIPTOR*)WdfCommonBufferGetAlignedVirtualAddress(engine->descBuffer);
@@ -183,6 +228,61 @@ static void EngineProcessTransfer(IN XDMA_ENGINE *engine)
         XDMA_POLL_WB* wbBuffer = (XDMA_POLL_WB*)WdfCommonBufferGetAlignedVirtualAddress(engine->pollWbBuffer);
         size_t wbBufferLength = WdfCommonBufferGetLength(engine->pollWbBuffer);
         RtlZeroMemory(wbBuffer, wbBufferLength);
+    }
+
+    // If any data is pending then call to WdfDmaTransactionDmaCompleted will immediately result in
+    // another call to XDMA_EngineProgramDma. To avoid deadlock, mark the engine as free and release the lock.
+    engine->isReqPending = FALSE;
+    if (!engine->poll) {
+        // reenable interrupt for this dma engine
+        EngineEnableInterrupt(engine);
+    }
+    WdfSpinLockRelease(engine->engineLock);
+
+    switch (engineStatus & XDMA_STAT_EXPECTED_ZERO) {
+    case XDMA_ENGINE_STOPPED_OK: // engine not busy and no errors?
+    {
+        completed = WdfDmaTransactionDmaCompleted(engine->dmaTransaction, &status);
+        size_t bytesTransferred = WdfDmaTransactionGetBytesTransferred(engine->dmaTransaction);
+
+        TraceInfo(DBG_DMA, "%s_%u transaction%scomplete, bytesTransferred=%llu",
+                  DirectionToString(engine->dir), engine->channel,
+                  completed ? " " : " in", bytesTransferred);
+
+        if (completed) {
+            if (!engine->poll) {
+                KeSetEvent(&engine->completionWaitSignal, IO_NO_INCREMENT, FALSE);
+            }
+
+            status = WdfDmaTransactionRelease(engine->dmaTransaction);
+            if (!NT_SUCCESS(status)) {
+                TraceError(DBG_DMA, "WdfDmaTransactionRelease failed: %!STATUS!", status);
+            }
+
+            WdfRequestCompleteWithInformation(request, status, bytesTransferred);
+        }
+        break;
+    }
+    case XDMA_BUSY_BIT: // engine is still busy without sign of errors?
+        TraceError(DBG_DMA, "Engine Still Busy, Descriptors Completed=%u",
+                   engine->regs->completedDescCount);
+    default: // any sign of errors
+        TraceError(DBG_DMA, "Unexpected engine status 0x%08x", engineStatus);
+
+        completed = WdfDmaTransactionDmaCompletedFinal(engine->dmaTransaction, 0, &status);
+        if (completed) {
+            if (!engine->poll) {
+                TraceInfo(DBG_DMA, "EVENT SIGNALLED");
+                KeSetEvent(&engine->completionWaitSignal, IO_NO_INCREMENT, FALSE);
+            }
+
+            status = WdfDmaTransactionRelease(engine->dmaTransaction);
+            if (!NT_SUCCESS(status)) {
+                TraceError(DBG_DMA, "WdfDmaTransactionRelease failed: %!STATUS!", status);
+            }
+
+            WdfRequestComplete(request, STATUS_INTERNAL_ERROR);
+        }
     }
 }
 
@@ -287,8 +387,105 @@ static BOOLEAN EngineExists(PXDMA_DEVICE xdma, DirToDev dir, ULONG channel) {
     return (engineID & XDMA_ID_MASK) == XDMA_ID;
 }
 
+VOID xdmaCompletionThread(PVOID context)
+{
+    XDMA_ENGINE* engine = (XDMA_ENGINE *)context;
+    ULONG processor = engine->channel;
+
+    if (engine->dir == C2H)
+        processor += engine->parentDevice->h2cChannelMax;
+
+    processor = (processor % KeQueryActiveProcessorCount(NULL));
+    TraceVerbose(DBG_INIT, "Active thread ID : %u", processor);
+    KAFFINITY affinity = (KAFFINITY)1 << processor;
+    KeSetSystemAffinityThread(affinity);
+
+    while (1) {
+
+        KeWaitForSingleObject(&engine->semaphore,
+                              Executive,
+                              KernelMode,
+                              FALSE,
+                              NULL);
+
+        if (engine->terminate) {
+            TraceInfo(DBG_INIT, "Terminating thread : %u", engine->channel);
+            PsTerminateSystemThread(STATUS_SUCCESS);
+            return;
+        }
+
+        if (TRUE == isReqPending(engine)) {
+            LARGE_INTEGER timeout;
+            timeout.QuadPart = -10 * 10000000; // 10 seconds timeout
+
+            NTSTATUS status = EngineWaitForCompletion(engine, timeout);
+            if (STATUS_SUCCESS != status) {
+                WDFREQUEST request = WdfDmaTransactionGetRequest(engine->dmaTransaction);
+                if (request) {
+                    TraceError(DBG_DMA, "EngineWaitForCompletion failed: %!STATUS!", status);
+                    WdfDmaTransactionRelease(engine->dmaTransaction);
+                    WdfRequestComplete(request, status);
+                }
+            }
+        }
+    }
+}
+
+static NTSTATUS initThread(XDMA_ENGINE* engine)
+{
+    engine->terminate = FALSE;
+    KeInitializeSemaphore(&engine->semaphore, 0, MAXLONG);
+
+    TraceInfo(DBG_INIT, "Creating thread : %u", engine->channel);
+
+    NTSTATUS status = PsCreateSystemThread(&engine->thHandle,
+                                           (ACCESS_MASK)0,
+                                           NULL,
+                                           (HANDLE)0,
+                                           NULL,
+                                           xdmaCompletionThread,
+                                           engine);
+    if (!NT_SUCCESS(status)) {
+        TraceError(DBG_INIT, "Failed to create thread [%u][%u] - %!STATUS!", engine->dir, engine->channel, status);
+        return status;
+    }
+
+    ObReferenceObjectByHandle(engine->thHandle,
+                              THREAD_ALL_ACCESS,
+                              NULL,
+                              KernelMode,
+                              &engine->thObject,
+                              NULL);
+
+    ZwClose(engine->thHandle);
+
+    engine->thInitialized = TRUE;
+    return status;
+}
+
+static void terminateThread(XDMA_ENGINE* engine)
+{
+    TraceInfo(DBG_INIT, "Terminating thread : %u", engine->channel);
+
+    if (FALSE == engine->thInitialized)
+        return;
+
+    if (engine->thObject) {
+        engine->terminate = TRUE;
+        KeReleaseSemaphore(&engine->semaphore, 0, 1, FALSE);
+
+        KeWaitForSingleObject(engine->thObject,
+            Executive,
+            KernelMode,
+            FALSE,
+            NULL);
+
+        ObDereferenceObject(engine->thObject);
+    }
+}
+
 static NTSTATUS EngineCreate(PXDMA_DEVICE xdma, XDMA_ENGINE* engine, DirToDev dir, ULONG channel,
-                             ULONG engineIndex) {
+                             ULONG engineIndex, ULONG engineId) {
 
     NTSTATUS status;
 
@@ -307,7 +504,7 @@ static NTSTATUS EngineCreate(PXDMA_DEVICE xdma, XDMA_ENGINE* engine, DirToDev di
     engine->addressMode = (engine->regs->control & XDMA_CTRL_NON_INCR_ADDR) != 0;
 
     // set interrupt sources
-    EngineConfigureInterrupt(engine, engineIndex);
+    EngineConfigureInterrupt(engine, engineIndex, engineId);
 
     // create common buffer for poll mode descriptor write back - if used
     status = EngineCreatePollWriteBackBuffer(engine);
@@ -347,6 +544,23 @@ static NTSTATUS EngineCreate(PXDMA_DEVICE xdma, XDMA_ENGINE* engine, DirToDev di
         TraceInfo(DBG_INIT, "creditModeEnable=0x%x", engine->parentDevice->sgdmaRegs->creditModeEnable);
     } else {
         engine->work = EngineProcessTransfer;
+    }
+
+    // Initialize completion wait and engine lock
+    engine->isReqPending = FALSE;
+
+    status = WdfSpinLockCreate(WDF_NO_OBJECT_ATTRIBUTES, &engine->engineLock);
+    if (!NT_SUCCESS(status)) {
+        TraceError(DBG_INIT, "WdfSpinLockCreate failed: %!STATUS!", status);
+        return status;
+    }
+
+    KeInitializeEvent(&engine->completionWaitSignal, NotificationEvent, FALSE);
+
+    status = initThread(engine);
+    if (!NT_SUCCESS(status)) {
+        TraceError(DBG_INIT, "initThread failed: %!STATUS!", status);
+        return status;
     }
 
     engine->enabled = TRUE;
@@ -418,14 +632,31 @@ BOOLEAN XDMA_EngineProgramDma(IN WDFDMATRANSACTION Transaction, IN WDFDEVICE Dev
     LONGLONG deviceOffset = (Direction == WdfDmaDirectionWriteToDevice) ?
         (SIZE_T)params.Parameters.Write.DeviceOffset :
         (SIZE_T)params.Parameters.Read.DeviceOffset;
+    size_t numBytesTransferred;
 
     // get virtual and physical pointers to descriptor buffer
     XDMA_ENGINE * engine = (XDMA_ENGINE*)context;
     DMA_DESCRIPTOR *descriptor = (DMA_DESCRIPTOR*)WdfCommonBufferGetAlignedVirtualAddress(engine->descBuffer);
     PHYSICAL_ADDRESS descBufferLA = WdfCommonBufferGetAlignedLogicalAddress(engine->descBuffer);
 
+    WdfSpinLockAcquire(engine->engineLock);
+    if (TRUE == engine->isReqPending) {
+        WdfSpinLockRelease(engine->engineLock);
+        ASSERTMSG("Request is already pending", (1 == 1));
+    }
+    else {
+        WdfSpinLockRelease(engine->engineLock);
+    }
+
+    //validate num descs
+    if (SgList->NumberOfElements > engine->capacity) {
+        TraceError(DBG_INIT, "Too many descriptors...");
+        goto ErrExit;
+    }
+
     // offset into the transaction (if it is split)
-    deviceOffset += WdfDmaTransactionGetBytesTransferred(Transaction);
+    numBytesTransferred = WdfDmaTransactionGetBytesTransferred(Transaction);
+    deviceOffset += numBytesTransferred;
 
     TraceVerbose(DBG_DMA, "device addr=%lld, num descriptors=%d",
                  deviceOffset, SgList->NumberOfElements);
@@ -486,13 +717,62 @@ BOOLEAN XDMA_EngineProgramDma(IN WDFDMATRANSACTION Transaction, IN WDFDEVICE Dev
     }
 
     MemoryBarrier();
-
+    markReqPending(engine);
     // start the engine
     EngineStart(engine);
-
     MemoryBarrier();
 
+    LARGE_INTEGER timeout;
+    timeout.QuadPart = -10 * 10000000; // 10 seconds timeout
+    NTSTATUS status = STATUS_SUCCESS;
+
+    if (engine->poll) {
+        status = EnginePollTransfer(engine, timeout);
+        if (STATUS_SUCCESS != status) {
+            // EnginePollTransfer does not complete the request on internal/timeout error.
+            TraceError(DBG_DMA, "EnginePollTransfer failed: %!STATUS!", status);
+            goto ErrExit;
+        }
+    }
+    else { // Interrupt mode
+        if (numBytesTransferred == (size_t)0) {
+            /* In split DMA, multiple EvtProgramDma callbacks will be called.
+             * After completing the first split, EvtProgramDma will be called from DPC.
+             * We can not do sleep wait from DPC, hence we do wait only for first split i.e.
+             * from the completion thread.
+             */
+            KeReleaseSemaphore(&engine->semaphore, 0, 1, FALSE);
+        }
+    }
+
     return TRUE;
+
+ErrExit:
+    // FIXME: Current framework ignores the FALSE return value.
+    // Therefore cleaning the request here itself.
+    status = STATUS_UNSUCCESSFUL;
+    WdfDmaTransactionRelease(engine->dmaTransaction);
+    WdfRequestComplete(request, status);
+    return FALSE;
+}
+
+void CountChannels(IN PXDMA_DEVICE xdma, OUT ULONG *h2cCount,OUT ULONG *c2hCount)
+{
+    *h2cCount = *c2hCount = 0;
+
+    // H2C Channels
+    for (ULONG ch = 0; ch < XDMA_MAX_NUM_CHANNELS; ch++) {
+        if (EngineExists(xdma, H2C, ch)) {
+            (*h2cCount)++;
+        }
+    }
+
+    // C2H Channels
+    for (ULONG ch = 0; ch < XDMA_MAX_NUM_CHANNELS; ch++) {
+        if (EngineExists(xdma, C2H, ch)) {
+            (*c2hCount)++;
+        }
+    }
 }
 
 NTSTATUS ProbeEngines(IN PXDMA_DEVICE xdma) {
@@ -502,26 +782,63 @@ NTSTATUS ProbeEngines(IN PXDMA_DEVICE xdma) {
 
     // iterate over H2C (FPGA performs PCIe reads towards FPGA),
     // then C2H (FPGA performs PCIe writes from FPGA)
-    for (UINT dir = H2C; dir < 2; dir++) { // 0=H2C, 1=C2H
-        for (ULONG ch = 0; ch < XDMA_MAX_NUM_CHANNELS; ch++) {
+    ULONG h2cChannelMax, c2hChannelMax;
+    CountChannels(xdma, &h2cChannelMax, &c2hChannelMax);
 
-            if (EngineExists(xdma, dir, ch)) {
-                XDMA_ENGINE* engine = &(xdma->engines[ch][dir]);
-                NTSTATUS status = EngineCreate(xdma, engine, dir, ch, engineIndex);
-                if (!NT_SUCCESS(status)) {
-                    TraceError(DBG_INIT, "EngineCreate failed! %!STATUS!", status);
-                    return status;
-                }
-                engineIndex++;
-                TraceInfo(DBG_INIT, "%s_%u engine created (AXI-%s)",
-                          DirectionToString(dir), ch, engine->type == EngineType_ST ? "ST" : "MM");
-            } else {     // skip inactive engines
-                TraceInfo(DBG_INIT, "Skipping non-existing engine %s_%u",
-                          DirectionToString(dir), ch);
+    UINT dir = H2C;
+    for (ULONG ch = 0; ch < xdma->h2cChannelMax; ch++) {
+        if (EngineExists(xdma, dir, ch)) {
+            XDMA_ENGINE* engine = &(xdma->engines[ch][dir]);
+            NTSTATUS status = EngineCreate(xdma, engine, dir, ch, engineIndex, engineIndex);
+            if (!NT_SUCCESS(status)) {
+                TraceError(DBG_INIT, "EngineCreate failed! %!STATUS!", status);
+                return status;
             }
+            engineIndex++;
+            TraceInfo(DBG_INIT, "%s_%u engine created (AXI-%s)",
+                DirectionToString(dir), ch, engine->type == EngineType_ST ? "ST" : "MM");
+        }
+        else {     // skip inactive engines
+            TraceInfo(DBG_INIT, "Skipping non-existing engine %s_%u",
+                DirectionToString(dir), ch);
         }
     }
+
+    dir = C2H;
+    for (ULONG ch = 0; ch < xdma->c2hChannelMax; ch++) {
+        if (EngineExists(xdma, dir, ch)) {
+            XDMA_ENGINE* engine = &(xdma->engines[ch][dir]);
+            NTSTATUS status = EngineCreate(xdma, engine, dir, ch, engineIndex, h2cChannelMax + ch);
+            if (!NT_SUCCESS(status)) {
+                TraceError(DBG_INIT, "EngineCreate failed! %!STATUS!", status);
+                return status;
+            }
+            engineIndex++;
+            TraceInfo(DBG_INIT, "%s_%u engine created (AXI-%s)",
+                DirectionToString(dir), ch, engine->type == EngineType_ST ? "ST" : "MM");
+        }
+        else {     // skip inactive engines
+            TraceInfo(DBG_INIT, "Skipping non-existing engine %s_%u",
+                DirectionToString(dir), ch);
+        }
+    }
+
     return STATUS_SUCCESS;
+}
+
+void closeEngines(IN PXDMA_DEVICE xdma)
+{
+    UINT dir = H2C;
+    for (ULONG ch = 0; ch < xdma->h2cChannelMax; ch++) {
+        XDMA_ENGINE* engine = &(xdma->engines[ch][dir]);
+        terminateThread(engine);
+    }
+
+    dir = C2H;
+    for (ULONG ch = 0; ch < xdma->c2hChannelMax; ch++) {
+         XDMA_ENGINE* engine = &(xdma->engines[ch][dir]);
+         terminateThread(engine);
+    }
 }
 
 void EngineStart(IN XDMA_ENGINE *engine) {
@@ -578,39 +895,64 @@ static NTSTATUS EngineCreateRingBuffer(IN XDMA_ENGINE* engine) {
                  engine->channel, engine->dir,
                  WdfCommonBufferGetAlignedLogicalAddress(engine->ring.results).QuadPart);
 
-    // create dma data buffer
-    PHYSICAL_ADDRESS low, high, skip;
-    low.QuadPart = 0;
-    high.QuadPart = 0xFFFFFFFFFFFFFFFF;
-    skip.QuadPart = PAGE_SIZE;
-    PMDL mdl = MmAllocatePagesForMdlEx(low, high, skip, XDMA_RING_NUM_BLOCKS * XDMA_RING_BLOCK_SIZE, MmNonCached, NormalPagePriority);
-    if (!mdl) {
-        TraceError(DBG_INIT, "MmAllocatePagesForMdlEx failed!");
-        return STATUS_INTERNAL_ERROR;
-    }
+    WDF_COMMON_BUFFER_CONFIG commonBufConfig;
+    WDF_COMMON_BUFFER_CONFIG_INIT(&commonBufConfig, FILE_64_BYTE_ALIGNMENT);
 
-    PVOID rxBufferVa = MmMapLockedPagesSpecifyCache(mdl, KernelMode, MmNonCached, NULL, FALSE, NormalPagePriority);
-    if (!rxBufferVa) {
-        TraceError(DBG_INIT, "MmMapLockedPagesSpecifyCache failed!");
-        return STATUS_INTERNAL_ERROR;
-    }
+    do {
+        /* Fist try for contigous common buffer allocation */
+        status = WdfCommonBufferCreateWithConfig(engine->parentDevice->dmaEnabler,
+                                                 XDMA_RING_NUM_BLOCKS * XDMA_RING_BLOCK_SIZE,
+                                                 &commonBufConfig,
+                                                 WDF_NO_OBJECT_ATTRIBUTES,
+                                                 &engine->ring.receiveBuffer);
+        if (!NT_SUCCESS(status)) {
+            TraceError(DBG_INIT, "WdfCommonBufferCreate failed: %!STATUS!", status);
+            break;
+        }
 
-    TraceInfo(DBG_INIT, "mdl VA=%p, byteCount=%u, next=%p", rxBufferVa, MmGetMdlByteCount(mdl), mdl->Next);
+        PUCHAR rxBufferVa = (PUCHAR)WdfCommonBufferGetAlignedVirtualAddress(engine->ring.receiveBuffer);
+        PHYSICAL_ADDRESS dmaAddr = WdfCommonBufferGetAlignedLogicalAddress(engine->ring.receiveBuffer);
 
-    // MDL ring
-    for (UINT i = 0; i < XDMA_RING_NUM_BLOCKS; ++i) {
-        engine->ring.mdl[i] = IoAllocateMdl((PUCHAR)rxBufferVa + (i * XDMA_RING_BLOCK_SIZE), XDMA_RING_BLOCK_SIZE, TRUE, FALSE, NULL);
-        if (!engine->ring.mdl[i]) {
-            TraceError(DBG_INIT, "IoAllocateMdl failed!");
-            return STATUS_INTERNAL_ERROR;
+        RtlZeroMemory(rxBufferVa, XDMA_RING_NUM_BLOCKS * XDMA_RING_BLOCK_SIZE);
+
+        // XMDL ring
+        for (UINT i = 0; i < XDMA_RING_NUM_BLOCKS; ++i) {
+            engine->ring.xmdl[i].virtAddr = rxBufferVa + (i * XDMA_RING_BLOCK_SIZE);
+            engine->ring.xmdl[i].dmaAdrr.QuadPart = dmaAddr.QuadPart + (i * XDMA_RING_BLOCK_SIZE);
+            engine->ring.xmdl[i].len = XDMA_RING_BLOCK_SIZE;
+        }
+
+    } while (0);
+
+    if (STATUS_INSUFFICIENT_RESOURCES == status) {
+        TraceVerbose(DBG_INIT, "Allocating sparse buffers");
+        /* Try allocating sparse buffers */
+        for (UINT i = 0; i < XDMA_RING_NUM_BLOCKS; ++i) {
+            status = WdfCommonBufferCreateWithConfig(engine->parentDevice->dmaEnabler,
+                                                     XDMA_RING_BLOCK_SIZE,
+                                                     &commonBufConfig,
+                                                     WDF_NO_OBJECT_ATTRIBUTES,
+                                                     &engine->ring.xmdl[i].rcvBuffer);
+            if (!NT_SUCCESS(status)) {
+                TraceError(DBG_INIT, "WdfCommonBufferCreate failed: %!STATUS!", status);
+                return status;
+            }
+
+            engine->ring.xmdl[i].virtAddr = WdfCommonBufferGetAlignedVirtualAddress(engine->ring.xmdl[i].rcvBuffer);
+            engine->ring.xmdl[i].dmaAdrr = WdfCommonBufferGetAlignedLogicalAddress(engine->ring.xmdl[i].rcvBuffer);
+            engine->ring.xmdl[i].len = XDMA_RING_BLOCK_SIZE;
+
+            RtlZeroMemory(engine->ring.xmdl[i].virtAddr, XDMA_RING_BLOCK_SIZE);
         }
     }
+    else if (!NT_SUCCESS(status)) {
+        return status;
+    }
 
     for (UINT i = 0; i < XDMA_RING_NUM_BLOCKS; ++i) {
-        TraceVerbose(DBG_INIT, "sub-mdl VA=%p, byteCount=%u, next=%p",
-                     MmGetMdlVirtualAddress(engine->ring.mdl[i]),
-                     MmGetMdlByteCount(engine->ring.mdl[i]),
-                     engine->ring.mdl[i]->Next);
+        TraceVerbose(DBG_INIT, "sub-xmdl VA=%p, DmaAddr=%llX",
+                                engine->ring.xmdl[i].virtAddr,
+                                engine->ring.xmdl[i].dmaAdrr.QuadPart);
     }
 
     status = WdfSpinLockCreate(WDF_NO_OBJECT_ATTRIBUTES, &engine->ring.lock);
@@ -699,7 +1041,7 @@ static void EngineRingProgramDma(IN XDMA_ENGINE* engine) {
         resultBufferLA.QuadPart += sizeof(DMA_RESULT);
 
         // destination is host memory
-        PHYSICAL_ADDRESS dst = MmGetPhysicalAddress(MmGetMdlVirtualAddress(engine->ring.mdl[i]));
+        PHYSICAL_ADDRESS dst = engine->ring.xmdl[i].dmaAdrr;
         descriptor[i].dstAddrLo = dst.LowPart;
         descriptor[i].dstAddrHi = dst.HighPart;
 
@@ -778,11 +1120,11 @@ void EngineRingTeardown(IN XDMA_ENGINE *engine) {
     engine->ring.tail = 0;
 }
 
-NTSTATUS EngineRingCopyBytesToMemory(IN XDMA_ENGINE *engine, WDFMEMORY outputMem, 
+NTSTATUS EngineRingCopyBytesToMemory(IN XDMA_ENGINE *engine, WDFMEMORY outputMem,
                                    size_t length, LARGE_INTEGER timeout, size_t* bytesRead ) {
     NTSTATUS status = 0;
     if (engine->poll) { // poll mode - poll for completion
-        status = EnginePollRing(engine);
+        status = EnginePollRing(engine, timeout);
         if (!NT_SUCCESS(status)) {
             goto ErrorExit;
         }
@@ -808,7 +1150,7 @@ NTSTATUS EngineRingCopyBytesToMemory(IN XDMA_ENGINE *engine, WDFMEMORY outputMem
     while ((head != tail) && numBytesRemaining) {
 
         // get dma ring buffer address and bytes transferred
-        PVOID rxBufferVa = MmGetMdlVirtualAddress(engine->ring.mdl[head]);
+        PVOID rxBufferVa = engine->ring.xmdl[head].virtAddr;
         size_t numBytesReceived = results[head].length;
 
         // limit buffer size
@@ -877,23 +1219,71 @@ static NTSTATUS EngineCreatePollWriteBackBuffer(IN OUT XDMA_ENGINE *engine) {
     return status;
 }
 
-NTSTATUS EnginePollTransfer(IN XDMA_ENGINE* engine) {
+static NTSTATUS EngineWaitForCompletion(IN XDMA_ENGINE* engine, IN LARGE_INTEGER timeout) {
+
+    NTSTATUS status = KeWaitForSingleObject(&engine->completionWaitSignal, Executive, KernelMode, FALSE, &timeout);
+    if (status == STATUS_TIMEOUT) {
+        TraceError(DBG_DMA, "Request timed out.");
+        WdfSpinLockAcquire(engine->engineLock);
+        if (FALSE == engine->isReqPending) {
+            /* Wait has timed out but request is been cleared by the DPC. So return success. */
+            TraceInfo(DBG_DMA, "Request is already processed.");
+            WdfSpinLockRelease(engine->engineLock);
+            KeClearEvent(&engine->completionWaitSignal);
+            return STATUS_SUCCESS;
+        }
+        else {
+            /* Wait has timed out and still request is not processed.
+             * Remove pending flag from engine so DPC wont proceed further to complete the request.
+             */
+            TraceInfo(DBG_DMA, "Request really timed out.");
+            engine->isReqPending = FALSE;
+            EngineStatus(engine, TRUE);
+            EngineStop(engine);
+            WdfSpinLockRelease(engine->engineLock);
+            return status;
+        }
+    }
+
+    KeClearEvent(&engine->completionWaitSignal);
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS EnginePollTransfer(IN XDMA_ENGINE* engine, IN LARGE_INTEGER timeout) {
 
     XDMA_POLL_WB* writeback_data = (XDMA_POLL_WB*)WdfCommonBufferGetAlignedVirtualAddress(engine->pollWbBuffer);
     const ULONG expected = engine->numDescriptors;
     volatile ULONG actual = 0;
+    LARGE_INTEGER timeNow;
+
+    KeQuerySystemTime(&timeNow);
+    LARGE_INTEGER timeEnd = timeNow;
+
+    // Expecting only Relative(-ve) value to current time.
+    if (timeout.QuadPart < 0)
+        timeEnd.QuadPart += (-timeout.QuadPart);
+    else
+        timeEnd.QuadPart += (timeout.QuadPart);
 
     do {
         actual = writeback_data->completedDescCount;
 
         if (actual & XDMA_WB_ERR_MASK) {
             TraceError(DBG_DMA, "error on writeback %u", actual);
+            unmarkReqPending(engine);
             return STATUS_INTERNAL_ERROR;
         }
         actual &= XDMA_WB_COUNT_MASK;
 
         if (actual > expected) {
             actual = expected | XDMA_WB_ERR_MASK;
+        }
+
+        KeQuerySystemTime(&timeNow);
+        if (timeNow.QuadPart >= timeEnd.QuadPart) {
+            TraceError(DBG_DMA, "Request timed out. Completed desc %u", actual);
+            unmarkReqPending(engine);
+            return STATUS_TIMEOUT;
         }
     } while (expected != actual);
 
@@ -904,14 +1294,19 @@ NTSTATUS EnginePollTransfer(IN XDMA_ENGINE* engine) {
     return STATUS_SUCCESS;
 }
 
-NTSTATUS EnginePollRing(IN XDMA_ENGINE* engine) {
+NTSTATUS EnginePollRing(IN XDMA_ENGINE* engine, IN LARGE_INTEGER timeout) {
     XDMA_POLL_WB* writeback_data = (XDMA_POLL_WB*)WdfCommonBufferGetAlignedVirtualAddress(engine->pollWbBuffer);
     volatile ULONG completed = 0;
     volatile UINT eopCount = 0;
-    UINT tryCount = 0;
+    LARGE_INTEGER timeNow;
+    KeQuerySystemTime(&timeNow);
+    LARGE_INTEGER timeEnd = timeNow;
+    timeEnd.QuadPart += (-timeout.QuadPart);
+
+    TraceVerbose(DBG_DMA, "POLLING FOR %llu TIME", timeEnd.QuadPart);
+
     do {
         completed = writeback_data->completedDescCount;
-
 
         if (completed & XDMA_WB_ERR_MASK) {
             TraceError(DBG_DMA, "error on writeback %u", completed);
@@ -921,14 +1316,15 @@ NTSTATUS EnginePollRing(IN XDMA_ENGINE* engine) {
             eopCount = EngineProcessRing(engine);
             TraceVerbose(DBG_DMA, "complete=%u, eop=%u", completed, eopCount);
         }
-        tryCount++;
-        if (tryCount >= 100000) {
-            break;
-        }
 
+        KeQuerySystemTime(&timeNow);
+        if (timeNow.QuadPart >= timeEnd.QuadPart) {
+            TraceError(DBG_DMA, "Request timed out");
+            return STATUS_TIMEOUT;
+        }
     } while (!eopCount);
 
-    TraceVerbose(DBG_DMA, "complete=%u, eop=%u, tryCount=%u", completed, eopCount, tryCount);
+    TraceVerbose(DBG_DMA, "complete=%u, eop=%u", completed, eopCount);
 
     return STATUS_SUCCESS;
 }

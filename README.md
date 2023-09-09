@@ -122,8 +122,8 @@ This application can be used to open any of the device nodes and perform read/wr
 ###### Usage
 ```
 xdma_rw.exe <DEVNODE> <read|write> <ADDR> [OPTIONS] [DATA]
-    - DEVNODE : One of: control | user | event_* | hc2_* | c2h_*, 
-                where the * is a numeric wildcard (0-15 for events, 0-3 for hc2 and c2h).
+    - DEVNODE : One of: control | user | event_* | h2c_* | c2h_*, 
+                where the * is a numeric wildcard (0-15 for events, 0-3 for h2c and c2h).
     - ADDR :    The target offset address of the read/write operation. 
                 Can be in hex or decimal.
     - OPTIONS : 

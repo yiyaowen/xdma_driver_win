@@ -174,8 +174,8 @@ static int get_devices(GUID guid, char* devpath, size_t len_devpath) {
 static void usage(const char* const exe_name) {
     printf("%s usage:\n\n", exe_name);
     printf("%s <DEVNODE> <read|write> <ADDR> [OPTIONS] [DATA]\n", exe_name);
-    printf("- DEVNODE : One of: control | user | event_* | hc2_* | c2h_*, \n");
-    printf("            where the * is a numeric wildcard (0-15 for events, 0-3 for hc2 and c2h).\n");
+    printf("- DEVNODE : One of: control | user | event_* | h2c_* | c2h_*, \n");
+    printf("            where the * is a numeric wildcard (0-15 for events, 0-3 for h2c and c2h).\n");
     printf("- ADDR :    The target offset address of the read/write operation. \n");
     printf("            Can be in hex or decimal.\n");
     printf("- OPTIONS : \n");

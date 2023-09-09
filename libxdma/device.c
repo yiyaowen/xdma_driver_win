@@ -1,19 +1,61 @@
 /*
-* XDMA Device
-* ===========
-*
-* Copyright 2017 Xilinx Inc.
-* Copyright 2010-2012 Sidebranch
-* Copyright 2010-2012 Leon Woestenberg <leon@sidebranch.com>
-*
-* Maintainer:
-* -----------
-* Alexander Hornburg <alexande@xilinx.com>
-*
-* References:
-* -----------
-*	[1] pg195-pcie-dma.pdf - DMA/Bridge Subsystem for PCI Express v3.0 - Product Guide
-*   [2] Windows Dev - Using Automatic Synchronization - https://msdn.microsoft.com/en-us/windows/hardware/drivers/wdf/using-automatic-synchronization
+-- (c) Copyright 2019 Xilinx, Inc. All rights reserved.
+--
+-- This file contains confidential and proprietary information
+-- of Xilinx, Inc. and is protected under U.S. and
+-- international copyright and other intellectual property
+-- laws.
+--
+-- DISCLAIMER
+-- This disclaimer is not a license and does not grant any
+-- rights to the materials distributed herewith. Except as
+-- otherwise provided in a Valid license issued to you by
+-- Xilinx, and to the maximum extent permitted by applicable
+-- law: (1) THESE MATERIALS ARE MADE AVAILABLE "AS IS" AND
+-- WITH ALL FAULTS, AND XILINX HEREBY DISCLAIMS ALL WARRANTIES
+-- AND CONDITIONS, EXPRESS, IMPLIED, OR STATUTORY, INCLUDING
+-- BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, NON-
+-- INFRINGEMENT, OR FITNESS FOR ANY PARTICULAR PURPOSE; and
+-- (2) Xilinx shall not be liable (whether in contract or tort,
+-- including negligence, or under any other theory of
+-- liability) for any loss or damage of any kind or nature
+-- related to, arising under or in connection with these
+-- materials, including for any direct, or any indirect,
+-- special, incidental, or consequential loss or damage
+-- (including loss of Data, profits, goodwill, or any type of
+-- loss or damage suffered as a result of any action brought
+-- by a third party) even if such damage or loss was
+-- reasonably foreseeable or Xilinx had been advised of the
+-- possibility of the same.
+--
+-- CRITICAL APPLICATIONS
+-- Xilinx products are not designed or intended to be fail-
+-- safe, or for use in any application requiring fail-safe
+-- performance, such as life-support or safety devices or
+-- systems, Class III medical devices, nuclear facilities,
+-- applications related to the deployment of airbags, or any
+-- other applications that could lead to death, personal
+-- injury, or severe property or environmental damage
+-- (individually and collectively, "Critical
+-- Applications"). Customer assumes the sole risk and
+-- liability of any use of Xilinx products in Critical
+-- Applications, subject only to applicable laws and
+-- regulations governing limitations on product liability.
+--
+-- THIS COPYRIGHT NOTICE AND DISCLAIMER MUST BE RETAINED AS
+-- PART OF THIS FILE AT ALL TIMES.
+-------------------------------------------------------------------------------
+--
+-- Vendor         : Xilinx
+-- Revision       : $Revision: #9 $
+-- Date           : $DateTime: 2019/06/30 21:08:14 $
+-- Last Author    : $Author: arayajig $
+--
+-------------------------------------------------------------------------------
+-- Description :
+-- This file is part of the Xilinx DMA IP Core driver for Windows.
+--
+-------------------------------------------------------------------------------
 */
 
 // ====================== include dependancies ========================================================
@@ -191,10 +233,17 @@ static void GetRegisterModules(IN PXDMA_DEVICE xdma) {
 
 NTSTATUS XDMA_DeviceOpen(WDFDEVICE wdfDevice,
                          PXDMA_DEVICE xdma,
+                         ULONG *userMax,
+                         ULONG *h2cChannelMax,
+                         ULONG *c2hChannelMax,
                          WDFCMRESLIST ResourcesRaw,
-                         WDFCMRESLIST ResourcesTranslated) {
+                         WDFCMRESLIST ResourcesTranslated
+                         ) {
 
     NTSTATUS status = STATUS_INTERNAL_ERROR;
+
+    if (NULL == xdma)
+        return STATUS_INVALID_PARAMETER;
 
     DeviceDefaultInitialize(xdma);
 
@@ -224,7 +273,7 @@ NTSTATUS XDMA_DeviceOpen(WDFDEVICE wdfDevice,
                      v2017_1, version);
     }
 
-    status = SetupInterrupts(xdma, ResourcesRaw, ResourcesTranslated);
+    status = SetupInterrupts(xdma, userMax, h2cChannelMax, c2hChannelMax, ResourcesRaw, ResourcesTranslated);
     if (!NT_SUCCESS(status)) {
         TraceError(DBG_INIT, "SetupInterrupts failed: %!STATUS!", status);
         return status;
@@ -263,6 +312,8 @@ void XDMA_DeviceClose(PXDMA_DEVICE xdma) {
         xdma->interruptRegs->channelVector[0] = 0;
         xdma->interruptRegs->channelVector[1] = 0;
     }
+
+    closeEngines(xdma);
 
     // Unmap any I/O ports. Disconnecting from the interrupt will be done automatically by the framework.
     for (UINT i = 0; i < xdma->numBars; i++) {
