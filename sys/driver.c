@@ -2,7 +2,7 @@
 * XDMA Device Driver for Windows
 * ===============================
 *
-* Copyright 2017 Xilinx Inc.
+* Copyright 2018 Xilinx Inc.
 * Copyright 2010-2012 Sidebranch
 * Copyright 2010-2012 Leon Woestenberg <leon@sidebranch.com>
 *
@@ -101,6 +101,17 @@ NTSTATUS DriverEntry(IN PDRIVER_OBJECT driverObject, IN PUNICODE_STRING registry
     // EvtDeviceAdd() will be called when a device is found
     WDF_DRIVER_CONFIG_INIT(&DriverConfig, EvtDeviceAdd);
 
+	/*isWheaEnabled = PshedIsSystemWheaEnabled();
+	if (isWheaEnabled == FALSE)
+	{
+		TraceInfo(DBG_INIT, "PSHED Enabled: %!STATUS!", status);
+		status = STATUS_SUCCESS;
+	}
+	else {
+		TraceInfo(DBG_INIT, "PSHED failed: %!STATUS!", status);
+	}*/
+
+
     // Creates a WDFDRIVER object, the top of our device's tree of objects
     status = WdfDriverCreate(driverObject, registryPath, WDF_NO_OBJECT_ATTRIBUTES, &DriverConfig,
                              &Driver);
@@ -110,8 +121,7 @@ NTSTATUS DriverEntry(IN PDRIVER_OBJECT driverObject, IN PUNICODE_STRING registry
         return status;
     }
 
-    driverObject->DriverUnload = DriverUnload;
-
+	driverObject->DriverUnload = DriverUnload;
     return status;
 }
 
@@ -137,7 +147,8 @@ NTSTATUS EvtDeviceAdd(IN WDFDRIVER Driver, IN PWDFDEVICE_INIT DeviceInit) {
     //  Direct I/O only works with deferred buffer retrieval No guarantee that Direct I/O is
     //  actually used Direct I/O is only used for buffers that are full pages Buffered I/O is used
     //  for other parts of the transfer
-    WdfDeviceInitSetIoType(DeviceInit, WdfDeviceIoDirect);
+	    
+	WdfDeviceInitSetIoType(DeviceInit, WdfDeviceIoDirect);
 
     // Set call-backs for any of the functions we are interested in. If no call-back is set, the 
     // framework will take the default action by itself.
@@ -170,7 +181,7 @@ NTSTATUS EvtDeviceAdd(IN WDFDRIVER Driver, IN PWDFDEVICE_INIT DeviceInit) {
     WDFDEVICE device;
     status = WdfDeviceCreate(&DeviceInit, &deviceAttributes, &device);
     if (!NT_SUCCESS(status)) {
-        TraceError(DBG_INIT, "WdfDeviceCreate failed: %!STATUS!", status);
+		TraceError(DBG_INIT, "WdfDeviceCreate failed: %!STATUS!", status);
         return status;
     }
 
@@ -181,6 +192,11 @@ NTSTATUS EvtDeviceAdd(IN WDFDRIVER Driver, IN PWDFDEVICE_INIT DeviceInit) {
         return status;
     }
 
+	WDF_OBJECT_ATTRIBUTES attribs;
+	WDF_OBJECT_ATTRIBUTES_INIT(&attribs);
+	attribs.SynchronizationScope = WdfSynchronizationScopeNone;
+	WDF_OBJECT_ATTRIBUTES_SET_CONTEXT_TYPE(&attribs, QUEUE_CONTEXT);
+
     // create the default queue upon all I/O requests arrive
     // accept multiple I/O request to run in parallel, they are sequentialized later
     WDF_IO_QUEUE_CONFIG queueConfig;
@@ -189,7 +205,7 @@ NTSTATUS EvtDeviceAdd(IN WDFDRIVER Driver, IN PWDFDEVICE_INIT DeviceInit) {
     queueConfig.EvtIoRead = EvtIoRead; // callback handler for read requests
     queueConfig.EvtIoWrite = EvtIoWrite; // callback handler for write requests
     WDFQUEUE entryQueue;
-    status = WdfIoQueueCreate(device, &queueConfig, WDF_NO_OBJECT_ATTRIBUTES, &entryQueue);
+    status = WdfIoQueueCreate(device, &queueConfig, &attribs, &entryQueue);
     if (!NT_SUCCESS(status)) {
         TraceError(DBG_INIT, "WdfIoQueueCreate failed: %!STATUS!", status);
         return status;

@@ -2,7 +2,7 @@
 * XDMA Driver public API
 * ===============================
 *
-* Copyright 2017 Xilinx Inc.
+* Copyright 2018 Xilinx Inc.
 * Copyright 2010-2012 Sidebranch
 * Copyright 2010-2012 Leon Woestenberg <leon@sidebranch.com>
 *
@@ -55,20 +55,56 @@ DEFINE_GUID(GUID_DEVINTERFACE_XDMA,
 #define	XDMA_FILE_C2H_3		L"\\c2h_3"
 
 #define XDMA_IOCTL(index) CTL_CODE(FILE_DEVICE_UNKNOWN, index, METHOD_BUFFERED, FILE_ANY_ACCESS)
-
-#define IOCTL_XDMA_GET_VERSION  XDMA_IOCTL(0x0)
-#define IOCTL_XDMA_PERF_START   XDMA_IOCTL(0x1)
-#define IOCTL_XDMA_PERF_STOP    XDMA_IOCTL(0x2)
-#define IOCTL_XDMA_PERF_GET     XDMA_IOCTL(0x3)
-#define IOCTL_XDMA_ADDRMODE_GET XDMA_IOCTL(0x4)
-#define IOCTL_XDMA_ADDRMODE_SET XDMA_IOCTL(0x5)
+	
+#define IOCTL_XDMA_GET_VERSION			XDMA_IOCTL(0x0)
+#define IOCTL_XDMA_PERF_START			XDMA_IOCTL(0x1)
+#define IOCTL_XDMA_PERF_STOP			XDMA_IOCTL(0x2)
+#define IOCTL_XDMA_PERF_GET				XDMA_IOCTL(0x3)
+#define IOCTL_XDMA_ADDRMODE_GET			XDMA_IOCTL(0x4)
+#define IOCTL_XDMA_ADDRMODE_SET			XDMA_IOCTL(0x5)
+#define IOCTL_WRITE_KEYHOLE_REGISTER	XDMA_IOCTL(0x6)
+#define IOCTL_MAP_BAR					XDMA_IOCTL(0x7)
 
 // structure for IOCTL_XDMA_PERF_GET
 typedef struct {
     UINT64 clockCycleCount;
     UINT64 dataCycleCount;
-    UINT64 pendingCount;
+	UINT64 pendingCount;
 }XDMA_PERF_DATA;
+
+/* For use on user bar repeatedly writing to a given register one 32 bit value at a time
+// ptrAddr - the pointer to the data you want to write e.g. an array
+// size - the number of 32 bit words you would like to write to the register
+// offset the address of the register
+
+example use
+-----------
+const ULONG size = 16;
+ULONG AXI_ADDRESS_EXAMPLE = 0x88;
+alignas(32) ULONG wr_buffer[size];
+
+DWORD nb;
+XDMA_KEYHOLE_DATA kholeData;
+kholeData.offset = AXI_ADDRESS_EXAMPLE;
+kholeData.ptrAddr = wr_buffer;
+kholeData.size = size;
+BOOL success = DeviceIoControl(user, IOCTL_WRITE_KEYHOLE_REGISTER, &kholeData, sizeof(XDMA_KEYHOLE_DATA), nullptr, 0, &nb, NULL);
+if (!success) {
+	throw std::runtime_error("ioctl failed!" + GetLastError());
+}
+
+*/
+typedef struct {
+	PULONG ptrAddr;
+	ULONG size;
+	ULONG offset;
+}XDMA_KEYHOLE_DATA, *PXDMA_KEYHOLE_DATA;
+
+
+typedef struct {
+	PVOID mappedAddress;
+	ULONG barLength;
+}XDMA_BAR_INFO, *PXDMA_BAR_INFO;
 
 #endif/*__XDMA_WINDOWS_H__*/
 

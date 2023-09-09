@@ -97,7 +97,7 @@ WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll = 1 ; make sure the number matches wi
 %XDMA.DRVDESC%=			XDMA_Inst,		PCI\VEN_10ee&DEV_7038
 
 [XDMA_Inst.NT]
-CopyFiles      = XDMA.CopyFiles
+CopyFiles   =	XDMA.CopyFiles
 
 [XDMA.CopyFiles]
 XDMA.sys
@@ -123,10 +123,11 @@ ServiceType    = 1                  ; SERVICE_KERNEL_DRIVER
 StartType      = 3                  ; SERVICE_DEMAND_START
 ErrorControl   = 1                  ; SERVICE_ERROR_NORMAL
 ServiceBinary  = %12%\XDMA.sys
-AddReg         = XDMA_Inst.NT.Services.AddReg
+AddReg         = XDMA_Inst.NT.Services.AddReg  ;Commented out for installer use, For debug include in build
 
 [XDMA_Inst.NT.Services.AddReg]
 HKR,Parameters,"POLL_MODE",0x00010001,0 ; set to 1 for hardware polling, default is 0 (interrupts)
+
 
 ; ====================== WDF Coinstaller installation =========================
 

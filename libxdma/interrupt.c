@@ -2,7 +2,7 @@
 * XDMA Interrupt Service Routines, Handlers and Dispatch Functions
 * ===============================
 *
-* Copyright 2017 Xilinx Inc.
+* Copyright 2018 Xilinx Inc.
 * Copyright 2010-2012 Sidebranch
 * Copyright 2010-2012 Leon Woestenberg <leon@sidebranch.com>
 *

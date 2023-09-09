@@ -2,7 +2,7 @@
 * XDMA Device File Interfaces for public API
 * ===============================
 *
-* Copyright 2017 Xilinx Inc.
+* Copyright 2018 Xilinx Inc.
 * Copyright 2010-2012 Sidebranch
 * Copyright 2010-2012 Leon Woestenberg <leon@sidebranch.com>
 *
@@ -16,8 +16,7 @@
 
 // ========================= include dependencies =================================================
 
-#include <ntddk.h>
-#include <wdf.h>
+#include "xdma.h"
 
 // ========================= declarations =========================================================
 
@@ -41,7 +40,7 @@ typedef struct _FILE_CONTEXT {
         XDMA_ENGINE* engine;    // H2C / C2H
     } u;
     WDFQUEUE queue;
-
+	PMDL mdl;
 } FILE_CONTEXT, *PFILE_CONTEXT;
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(FILE_CONTEXT, GetFileContext)
 
